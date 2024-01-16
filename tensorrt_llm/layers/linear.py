@@ -25,6 +25,7 @@ from ..module import Module
 from ..parameter import Parameter
 from ..plugin import TRT_LLM_PLUGIN_NAMESPACE
 from .lora import Lora, LoraRuntimeParams
+from .ia3 import Ia3RuntimeParams
 
 
 def _gemm_plugin(input: Tensor,
@@ -109,6 +110,7 @@ class Linear(Module):
                         use_fp8=False,
                         lora_runtime_params: LoraRuntimeParams = None):
         hidden_state = x
+
         if gemm_plugin:
             x = _gemm_plugin(x,
                              weight,
@@ -133,7 +135,9 @@ class Linear(Module):
 
         return x
 
-    def forward(self, x, lora_runtime_params: LoraRuntimeParams = None):
+    def forward(self, 
+                x, 
+                lora_runtime_params: LoraRuntimeParams = None):
         return self.multiply_gather(x,
                                     self.weight.value,
                                     default_net().plugin_config.gemm_plugin,

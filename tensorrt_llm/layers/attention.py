@@ -18,6 +18,8 @@ from typing import List, Optional
 import numpy as np
 import tensorrt as trt
 
+from tensorrt_llm.logger import logger
+
 from .._common import default_net, precision
 from .._utils import numpy_fp32_to_bf16, trt_dtype_to_np
 from ..functional import (AttentionMaskType, PositionEmbeddingType,
@@ -33,6 +35,7 @@ from ..quantization.functional import dequantize, quantize
 from ..quantization.layers import FP8Linear, FP8RowLinear
 from .linear import ColumnLinear, RowLinear
 from .lora import Lora, LoraRuntimeParams
+from .ia3 import Ia3QKV
 
 
 class RopeEmbeddingUtils:
@@ -537,6 +540,11 @@ class Attention(Module):
                 self.num_attention_heads * self.attention_head_size,
                 self.num_attention_kv_heads * self.attention_head_size),
         )
+        
+        self.qkv_ia3 = Ia3QKV(
+            query_size=tp_size * self.num_attention_heads * self.attention_head_size,
+            kv_size=tp_size * self.num_attention_kv_heads * self.attention_head_size
+        )
 
     def forward(self,
                 hidden_states: Tensor,
@@ -548,9 +556,12 @@ class Attention(Module):
                 workspace=None,
                 position_embedding=None,
                 norm_before_bmm1=False,
-                lora_layer_params=None):
+                lora_layer_params=None,
+                ia3_layer_params=None):
 
         assert isinstance(hidden_states, Tensor)
+
+        logger.info(f'in forward. {ia3_layer_params}')
 
         alibi_slopes = None
         if self.position_embedding_type.is_alibi():
@@ -610,6 +621,16 @@ class Attention(Module):
             del self._modules['qkv']
         else:
             qkv = self.qkv(hidden_states, qkv_lora_params)
+            
+        if ia3_layer_params is not None:
+            k_ia3_params = ia3_layer_params.get_runtime_params(0, "attn_k")
+            assert k_ia3_params is not None
+            v_ia3_params = ia3_layer_params.get_runtime_params(0, "attn_v")
+            assert v_ia3_params is not None
+            qkv = self.qkv_ia3.forward(qkv,
+                                       k_runtime_params=k_ia3_params,
+                                       v_runtime_params=v_ia3_params,
+                                       unfuse_qkv_gemm=unfuse_qkv_gemm)
 
         if default_net().plugin_config.remove_input_padding:
             if unfuse_qkv_gemm:
